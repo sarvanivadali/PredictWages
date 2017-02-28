@@ -1,0 +1,225 @@
+---
+title: "Analyze & Predict Hourly Wages"
+author: "Sarvani Vadali"
+date: "April 24, 2016"
+output: html_document
+---
+
+1. loading required packages
+---
+*Uncomment the follwing install commands to install packages if needed*
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+#install.packages("klaR")
+#install.packages("e1071")
+#install.packages("dplyr")
+#install.packages("data.table")
+#install.packages("e1071")
+#install.packages("caret")
+#install.packages("klaR")
+#install.packages("randomForest")
+
+require(klaR)
+require(e1071)
+require(dplyr)
+require(ggplot2)
+require(data.table)
+require(car)
+require(randomForest)
+
+library(plyr)
+library(dplyr)
+library(data.table)
+library(e1071)
+library(caret)
+library(ggplot2)
+```
+
+# 2. Load dataset as a data frame
+*The following script assumes that **SLID-Ontario.txt** file is present in the current working directory*
+
+```{r}
+# Cleanup workspace.
+rm(list=ls())
+
+# Load data file as a data frame.
+wages.data <- read.table("SLID-Ontario.txt", header = TRUE)
+wages.data <- na.omit(wages.data)
+```
+#### 2.1 View structure of the data
+
+```{r}
+summary(wages.data)
+
+pairs(wages.data)
+
+# Plot and visually inspect if gender plays a role in wages.
+plot(wages.data$sex, wages.data$compositeHourlyWages)
+```
+
+
+*It seems like gender plays a role in hourly wages. This can be further analyzed using more advanced techniques.*
+
+# 3. Analysis
+## 3.1 Regression model
+
+#### 3.1.1 Age vs Hourly wage
+*Determine how hourly wage changes over age*
+
+```{r}
+
+# Build a simple regression model to analyze how age determines hourly wage.
+wageAndAge.lmfit	= lm(wages.data$compositeHourlyWages ~ wages.data$age)
+summary(wageAndAge.lmfit)
+plot(fitted(wageAndAge.lmfit), residuals(wageAndAge.lmfit),
+  xlab = "Fitted Values", ylab = "Residuals")
+  abline(h=0, lty=2)
+  lines(smooth.spline(fitted(wageAndAge.lmfit), residuals(wageAndAge.lmfit)))
+residualPlots(wageAndAge.lmfit)
+```
+
+The values are reasonably densed around the center line and the model can be used to perform intial analysis.
+
+**It seems like hourly wages increase over age in general but tend to decline over late years**
+
+#### 3.1.2 Gender vs Hourly wage
+
+*Determine if gender plays a role in hourly wages*
+
+```{r}
+# Build a simple regression model to analyze how gender determines hourly wage.
+genderAndEducation.lmfit	= lm(wages.data$compositeHourlyWages ~ wages.data$sex, data = wages.data)
+summary(genderAndEducation.lmfit)
+
+plot(wages.data$compositeHourlyWages~wages.data$sex, data=wages.data, main="Gender vs Hourly wage", xlab = "Gender", ylab = "Hourly wage")
+abline(genderAndEducation.lmfit, col="red")
+```
+
+**It seems gender plays a significant role in hourly wages. Men tend to getting paid more then women.**
+
+#### 3.1.2 Years of education vs Hourly wage
+
+```{r}
+# Build a simple regression model to analyze how years of education determines hourly wage.
+
+wageAndEducation.lmfit	= lm(wages.data$compositeHourlyWages ~ wages.data$yearsEducation, data = wages.data)
+summary(wageAndEducation.lmfit)
+
+plot(wages.data$compositeHourlyWages~wages.data$yearsEducation, data=wages.data, main="Education vs Hourly wage", xlab = "Education", ylab = "Hourly wage")
+abline(wageAndEducation.lmfit, col="red")
+
+```
+
+**It seems that as number of years of education increases pay in general increases**
+
+## 3.2 Naive-Bayes 
+*Perform further analysis using Naive-Bayes algorithm*
+
+#### 3.2.1 Manipulate data
+
+*Add range of wages to existing data*
+
+```{r}
+min.wage = floor(min(wages.data$compositeHourlyWages))
+max.wage = ceiling(max(wages.data$compositeHourlyWages))
+num.of.levels = 10 # Add ten wage ranges.
+level.range = ceiling((max.wage - min.wage) / num.of.levels)
+
+# Add new levels to dataset.
+wages.data$wageRange <- ""
+x <- min.wage
+y <- level.range
+
+repeat {
+  wages.data[wages.data$compositeHourlyWages >= x & wages.data$compositeHourlyWages < y ,]$wageRange = paste(x,"To",y)
+  x <- y
+  y <- x + level.range
+  
+  if(y > max.wage){
+    break
+  }
+}
+
+wages.data.new <- wages.data
+wages.data.new$compositeHourlyWages <- NULL # Remove composite data.
+
+```
+
+#### 3.2.1 Naive-Bayes classification model
+
+*Create trainig and testing data*
+
+```{r}
+set.seed(1234)
+index <- createDataPartition(wages.data.new$wageRange, p = .8, list = FALSE)
+wages.training.data <- wages.data.new[index, ]
+wages.testing.data <- wages.data.new[-index, ]
+```
+
+*Create model*
+
+```{r}
+nb.model <- naiveBayes(as.factor(wageRange)~., data = wages.training.data)
+
+# exploring the nb object:
+names(nb.model)
+
+nb.pred <- predict(nb.model, newdata=wages.testing.data, laplace=3)
+```
+
+*Predictions for gender vs wages*
+
+```{r}
+table(nb.pred, wages.testing.data$sex)
+```
+
+*Predictions for age vs wages*
+
+```{r}
+table(nb.pred, wages.testing.data$age)
+```
+
+*Predictions for years of education vs wages*
+
+```{r}
+table(nb.pred, wages.testing.data$yearsEducation)
+```
+
+**Naive Bayes also confirms that gender plays a role in determining hourly wages**
+
+#### 3.2.2 Support Vector Machine model
+
+*Build model*
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+set.seed(5678)
+
+fit.Control <- trainControl(method = "repeatedcv",
+  number = 10,
+  repeats = 10)
+
+svm.model <- train(wageRange ~ ., data = wages.training.data,
+                 method = "svmLinear",
+                 trControl = fit.Control,
+                 verbose = FALSE)
+svm.model
+
+svm.pred <- predict(svm.model, newdata=wages.testing.data, laplace=3)
+```
+
+*Predictions for gender vs wages*
+
+```{r}
+table(svm.pred, wages.testing.data$sex)
+```
+
+*Predictions for age vs wages*
+
+```{r}
+table(svm.pred, wages.testing.data$age)
+```
+
+*Predictions for years of education vs wages*
+
+```{r}
+table(svm.pred, wages.testing.data$yearsEducation)
+```
